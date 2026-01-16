@@ -1,0 +1,32 @@
+[Unit]
+Description=Shariah-Compliant AI Daytrading Bot
+Documentation=https://github.com/Peshwa707/shariah_daytrader
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sam
+Group=sam
+WorkingDirectory=/home/sam/Claude/shariah_daytrader
+Environment=PATH=/home/sam/Claude/shariah_daytrader/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+
+# Start the trading bot in autonomous mode
+ExecStart=/home/sam/Claude/shariah_daytrader/.venv/bin/python main.py --trade
+
+# Restart policy
+Restart=on-failure
+RestartSec=30
+
+# Stop gracefully (sends SIGTERM, allows position closing)
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shariah-trader
+
+[Install]
+WantedBy=multi-user.target
