@@ -1,0 +1,31 @@
+# Shariah-Compliant AI Daytrading Bot - Dependencies
+
+# Core
+ib-async>=1.0.0              # IBKR API (successor to ib_insync)
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Technical Analysis
+pandas-ta>=0.3.14
+
+# Machine Learning
+scikit-learn>=1.3.0
+lightgbm>=4.0.0
+optuna>=3.0.0                # Hyperparameter tuning
+
+# Backtesting
+vectorbt>=0.26.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Utilities
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+httpx>=0.25.0                # For API calls (Alpha Vantage, etc.)
+
+# Development
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+jupyter>=1.0.0
