@@ -13,6 +13,7 @@ Islamic finance principles prohibit investment in companies primarily engaged in
 - Conventional banking/insurance (interest-based)
 - Weapons manufacturing (controversial - some scholars allow defense)
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum

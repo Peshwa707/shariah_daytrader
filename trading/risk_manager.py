@@ -8,6 +8,7 @@ Implements risk management rules:
 - Daily loss limits
 - Portfolio-level risk monitoring
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, date

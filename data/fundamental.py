@@ -13,6 +13,7 @@ The data is used for:
 - Industry/sector classification
 - Revenue breakdown analysis
 """
+from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field

@@ -13,6 +13,7 @@ Setup Requirements:
 Note: ib_async is the successor to ib_insync and provides
 asyncio-native IBKR API access.
 """
+from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta

@@ -9,6 +9,7 @@ SQLite-based storage for:
 
 Uses SQLAlchemy for ORM and easy migration to PostgreSQL if needed.
 """
+from __future__ import annotations
 
 from datetime import datetime, date
 from typing import Any

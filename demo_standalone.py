@@ -5,6 +5,7 @@ Standalone Demo - No External Dependencies Required
 This demonstrates the core Shariah screening logic without
 requiring pydantic, pandas, or other external packages.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime

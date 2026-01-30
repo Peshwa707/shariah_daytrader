@@ -8,6 +8,7 @@ This module orchestrates the entire trading process:
 4. Execute orders via IBKR
 5. Track positions and P&L
 """
+from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field

@@ -9,6 +9,7 @@ This module combines multiple screening approaches:
 The engine provides a unified interface for compliance checking and
 maintains a cache of screening results.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta

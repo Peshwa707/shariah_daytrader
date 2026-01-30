@@ -9,6 +9,7 @@ LightGBM is a gradient boosting framework that is:
 
 This is the "advanced" model after proving the concept with Random Forest.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime

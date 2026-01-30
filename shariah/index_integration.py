@@ -13,6 +13,7 @@ These indices are maintained by professional Shariah boards and provide
 reliable compliance screening. We use them as the primary filter and
 supplement with our own screening for additional verification.
 """
+from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field

@@ -10,6 +10,7 @@ VectorBT is a vectorized backtesting library that enables:
 This module provides a unified interface for backtesting
 our ML-based trading strategies.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime

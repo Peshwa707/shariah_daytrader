@@ -10,6 +10,7 @@ Indicators included:
 - Volatility: ATR, Bollinger Bands
 - Volume: OBV, VWAP ratios
 """
+from __future__ import annotations
 
 from typing import Any
 import logging
@@ -198,7 +199,7 @@ class TechnicalFeatures:
         # Price position in Bollinger Bands
         if "bb_upper" in df.columns and "bb_lower" in df.columns:
             bb_range = df["bb_upper"] - df["bb_lower"]
-            df["bb_position"] = (close - df["bb_lower"]) / bb_range
+            df["bb_position"] = (close - df["bb_lower"]) / bb_range.replace(0, np.nan)
 
         # Historical volatility (rolling std of returns)
         returns = close.pct_change()

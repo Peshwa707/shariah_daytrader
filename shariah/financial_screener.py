@@ -13,6 +13,7 @@ Key Financial Screens:
 These thresholds ensure minimal exposure to interest (riba) and
 non-permissible income sources.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime

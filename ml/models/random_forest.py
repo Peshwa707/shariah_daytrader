@@ -11,6 +11,7 @@ Random Forest is chosen as the baseline model because:
 - No feature scaling required
 - Works well with time series data
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime

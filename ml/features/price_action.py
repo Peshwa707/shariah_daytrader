@@ -9,6 +9,7 @@ focusing on patterns and behaviors that may predict future moves:
 - Price patterns
 - Relative strength
 """
+from __future__ import annotations
 
 from typing import Any
 import logging

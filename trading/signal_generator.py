@@ -4,6 +4,7 @@ Signal Generator - ML-based trading signal generation.
 This module scans Shariah-compliant stocks and generates
 buy/sell signals using trained ML models.
 """
+from __future__ import annotations
 
 import asyncio
 import logging

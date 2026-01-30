@@ -11,6 +11,7 @@ This module calculates and tracks purification obligations for:
 2. Capital gains - some scholars require this
 3. Total returns - comprehensive approach
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, date
