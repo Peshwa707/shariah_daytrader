@@ -20,8 +20,6 @@ from datetime import datetime, timedelta
 from typing import Any
 import json
 
-import httpx
-
 from config.settings import settings
 
 

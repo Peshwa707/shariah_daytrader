@@ -22,6 +22,7 @@ import signal
 import sys
 from datetime import datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -82,11 +83,14 @@ def print_configuration():
 
 
 def is_market_open() -> bool:
-    """Check if US market is currently open (Eastern Time approximation)."""
-    now = datetime.now()
-    # Simple check - weekday between 9:30 AM and 4:00 PM
-    # Note: This doesn't account for holidays or timezone properly
-    if now.weekday() >= 5:  # Weekend
+    """Check if US market is currently open (Eastern Time).
+
+    Note: This doesn't account for holidays.
+    """
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    # Weekend check
+    if now.weekday() >= 5:
         return False
     current_time = now.time()
     market_open = time(9, 30)

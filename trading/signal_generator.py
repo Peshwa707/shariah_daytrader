@@ -267,8 +267,17 @@ class SignalGenerator:
             X_latest = features[feature_cols].iloc[[-1]]
 
             # Get prediction
+            if self._model is None:
+                logger.warning(f"Model is None for {symbol}")
+                return None
+
             prediction = self._model.predict(X_latest)
             probability = self._model.predict_proba(X_latest)
+
+            # Validate prediction results
+            if probability is None or len(probability) == 0 or len(probability[0]) == 0:
+                logger.warning(f"Invalid probability output for {symbol}")
+                return None
 
             # probability is array of [prob_class_0, prob_class_1]
             prob_up = probability[0][1] if len(probability[0]) > 1 else probability[0][0]
@@ -356,17 +365,26 @@ class SignalGenerator:
             Callable that returns list of signals
         """
         def _sync_generate() -> list[Signal]:
-            # Create new event loop if needed
+            # Check if we're in an async context
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 loop = None
 
             if loop and loop.is_running():
-                # We're already in an async context - use a future
+                # We're already in an async context - run in a new thread with its own loop
                 import concurrent.futures
+
+                def _run_in_new_loop():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(self.generate_signals())
+                    finally:
+                        new_loop.close()
+
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, self.generate_signals())
+                    future = pool.submit(_run_in_new_loop)
                     return future.result()
             else:
                 return asyncio.run(self.generate_signals())

@@ -119,6 +119,7 @@ class ExecutionEngine:
         # State tracking
         self._running = False
         self._positions: dict[str, dict[str, Any]] = {}
+        self._positions_lock = asyncio.Lock()  # Protect positions dict from race conditions
         self._pending_signals: list[Signal] = []
         self._execution_history: list[dict[str, Any]] = []
 
@@ -372,7 +373,10 @@ class ExecutionEngine:
         """Close all open positions."""
         results = []
 
-        for symbol, position in list(self._positions.items()):
+        async with self._positions_lock:
+            positions_snapshot = list(self._positions.items())
+
+        for symbol, position in positions_snapshot:
             if position.get("quantity", 0) > 0:
                 order = self.order_manager.create_market_order(
                     symbol,
@@ -388,23 +392,24 @@ class ExecutionEngine:
 
         return results
 
-    def update_position(
+    async def update_position(
         self,
         symbol: str,
         quantity: float,
         avg_price: float,
         current_price: float | None = None,
     ) -> None:
-        """Update position tracking."""
-        if quantity == 0:
-            self._positions.pop(symbol, None)
-        else:
-            self._positions[symbol] = {
-                "quantity": quantity,
-                "avg_price": avg_price,
-                "current_price": current_price,
-                "updated_at": datetime.now(),
-            }
+        """Update position tracking (async for thread safety)."""
+        async with self._positions_lock:
+            if quantity == 0:
+                self._positions.pop(symbol, None)
+            else:
+                self._positions[symbol] = {
+                    "quantity": quantity,
+                    "avg_price": avg_price,
+                    "current_price": current_price,
+                    "updated_at": datetime.now(),
+                }
 
         # Update risk manager
         self.risk_manager.update_position(

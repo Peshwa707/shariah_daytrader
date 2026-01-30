@@ -293,6 +293,16 @@ class RiskManager:
 
     def _check_daily_loss_limit(self) -> RiskCheck:
         """Check if daily loss limit has been hit."""
+        # Guard against zero portfolio value
+        if self.portfolio_value <= 0:
+            return RiskCheck(
+                passed=False,
+                message="Cannot trade: portfolio value is zero or negative",
+                risk_value=0,
+                limit_value=0,
+                check_name="daily_loss_limit",
+            )
+
         max_loss = self.portfolio_value * self.limits.max_daily_loss_pct
         current_loss = -self._daily_pnl if self._daily_pnl < 0 else 0
 

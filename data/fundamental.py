@@ -177,15 +177,22 @@ class FundamentalDataFetcher:
         bs_data = balance_sheet.get("annualReports", [{}])[0] if balance_sheet else {}
         is_data = income_statement.get("annualReports", [{}])[0] if income_statement else {}
 
+        # Use explicit None checks to avoid treating 0 as falsy
+        total_debt_val = self._parse_float(bs_data.get("totalDebt"))
+        if total_debt_val is None:
+            total_debt_val = self._parse_float(bs_data.get("shortLongTermDebtTotal"))
+
+        cash_val = self._parse_float(bs_data.get("cashAndCashEquivalentsAtCarryingValue"))
+        if cash_val is None:
+            cash_val = self._parse_float(bs_data.get("cashAndShortTermInvestments"))
+
         financial_data = FinancialData(
             symbol=symbol,
             market_cap=overview.market_cap if overview else None,
-            total_debt=self._parse_float(bs_data.get("totalDebt")) or
-                       self._parse_float(bs_data.get("shortLongTermDebtTotal")),
+            total_debt=total_debt_val,
             short_term_debt=self._parse_float(bs_data.get("shortTermDebt")),
             long_term_debt=self._parse_float(bs_data.get("longTermDebt")),
-            cash_and_equivalents=self._parse_float(bs_data.get("cashAndCashEquivalentsAtCarryingValue")) or
-                                 self._parse_float(bs_data.get("cashAndShortTermInvestments")),
+            cash_and_equivalents=cash_val,
             accounts_receivable=self._parse_float(bs_data.get("currentNetReceivables")),
             total_assets=self._parse_float(bs_data.get("totalAssets")),
             total_revenue=self._parse_float(is_data.get("totalRevenue")),

@@ -310,7 +310,7 @@ class IBKRClient:
 
             return MarketData(
                 symbol=symbol,
-                last_price=ticker.last if ticker.last != ticker.last else None,  # NaN check
+                last_price=ticker.last if ticker.last == ticker.last else None,  # NaN check (NaN != NaN)
                 bid=ticker.bid if ticker.bid == ticker.bid else None,
                 ask=ticker.ask if ticker.ask == ticker.ask else None,
                 bid_size=ticker.bidSize if ticker.bidSize else None,

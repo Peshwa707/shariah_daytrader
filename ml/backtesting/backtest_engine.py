@@ -262,10 +262,11 @@ class BacktestEngine:
             train_size = int(len(split_data) * train_ratio)
             train_features = split_data.iloc[:train_size]
             test_features = split_data.iloc[train_size:]
+            train_price = split_price.iloc[:train_size]
             test_price = split_price.iloc[train_size:]
 
-            # Create target (next day return > 0)
-            train_target = (split_price.pct_change().shift(-1).iloc[:train_size] > 0).astype(int)
+            # Create target ONLY from train data to prevent data leakage
+            train_target = (train_price.pct_change().shift(-1) > 0).astype(int)
 
             # Train model
             model = model_class(**model_params)
