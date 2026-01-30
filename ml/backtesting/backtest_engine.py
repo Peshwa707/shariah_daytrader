@@ -274,6 +274,11 @@ class BacktestEngine:
 
             # Generate predictions
             predictions = model.predict(test_features)
+            # Handle empty predictions
+            if len(predictions) == 0:
+                logger.warning(f"No predictions generated for split {i + 1}")
+                continue
+
             pred_series = pd.Series(
                 [p["signal"] == "buy" for p in predictions] if isinstance(predictions[0], dict) else predictions,
                 index=test_features.index,
@@ -362,7 +367,8 @@ class BacktestEngine:
                     exposure_time = 0
             else:
                 exposure_time = 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Could not calculate exposure time: {e}")
             exposure_time = 0
 
         return BacktestResult(
@@ -381,8 +387,8 @@ class BacktestEngine:
             avg_loss=avg_loss,
             largest_win=largest_win,
             largest_loss=largest_loss,
-            start_date=portfolio.wrapper.index[0],
-            end_date=portfolio.wrapper.index[-1],
+            start_date=portfolio.wrapper.index[0] if len(portfolio.wrapper.index) > 0 else datetime.now(),
+            end_date=portfolio.wrapper.index[-1] if len(portfolio.wrapper.index) > 0 else datetime.now(),
             total_days=len(portfolio.close),
             exposure_time=exposure_time,
             equity_curve=equity_curve,
@@ -445,7 +451,7 @@ class BacktestEngine:
             "",
         ]
 
-        if benchmark is not None:
+        if benchmark is not None and len(benchmark) > 0 and benchmark.iloc[0] != 0:
             bench_return = (benchmark.iloc[-1] / benchmark.iloc[0]) - 1
             report.extend([
                 "-" * 60,
@@ -509,6 +515,9 @@ def calculate_benchmark_metrics(price: pd.Series) -> dict[str, float]:
         Dict with benchmark metrics
     """
     returns = price.pct_change().dropna()
+
+    if len(price) == 0 or price.iloc[0] == 0:
+        return {"total_return": 0, "annual_return": 0, "volatility": 0, "sharpe_ratio": 0, "max_drawdown": 0}
 
     total_return = (price.iloc[-1] / price.iloc[0]) - 1
     annual_return = (1 + total_return) ** (252 / len(price)) - 1

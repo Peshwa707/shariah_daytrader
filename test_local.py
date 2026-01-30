@@ -160,8 +160,12 @@ def test_technical_features():
     indicators = ['sma_20', 'ema_20', 'rsi', 'macd', 'atr', 'bb_upper']
     for ind in indicators:
         if ind in tech_df.columns:
-            val = tech_df[ind].dropna().iloc[-1]
-            print(f"  ✓ {ind}: {val:.2f}")
+            series = tech_df[ind].dropna()
+            if len(series) > 0:
+                val = series.iloc[-1]
+                print(f"  ✓ {ind}: {val:.2f}")
+            else:
+                print(f"  - {ind}: No data")
 
     # Test price action features
     print("\nPrice Action Features:")
@@ -171,8 +175,12 @@ def test_technical_features():
     features = ['return_1d', 'momentum_5d', 'volatility_20', 'rsi_oversold']
     for feat in features:
         if feat in pa_df.columns:
-            val = pa_df[feat].dropna().iloc[-1]
-            print(f"  ✓ {feat}: {val:.4f}")
+            series = pa_df[feat].dropna()
+            if len(series) > 0:
+                val = series.iloc[-1]
+                print(f"  ✓ {feat}: {val:.4f}")
+            else:
+                print(f"  - {feat}: No data")
 
     # Test full pipeline
     print("\nFull Feature Pipeline:")
@@ -242,7 +250,10 @@ def test_backtesting():
     price = df['close']
 
     print(f"Testing with {len(price)} days of data")
-    print(f"Buy & Hold Return: {(price.iloc[-1]/price.iloc[0] - 1):.2%}")
+    if len(price) > 0 and price.iloc[0] != 0:
+        print(f"Buy & Hold Return: {(price.iloc[-1]/price.iloc[0] - 1):.2%}")
+    else:
+        print("Buy & Hold Return: N/A (insufficient data)")
 
     # Generate simple signals (SMA crossover)
     sma_fast = price.rolling(10).mean()
