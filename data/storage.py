@@ -169,6 +169,12 @@ class TradeRecord(Base):
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
 
+    # Trade timing
+    entry_time = Column(DateTime)  # When position was opened
+    exit_time = Column(DateTime)  # When position was closed (nullable)
+    holding_period_minutes = Column(Integer)  # Duration of trade (nullable)
+    exit_reason = Column(String(50))  # take_profit, stop_loss, manual, auto_exit (nullable)
+
     __table_args__ = (
         Index("ix_trade_symbol_date", "symbol", "trade_date"),
     )
@@ -187,6 +193,10 @@ class TradeRecord(Base):
             "commission": self.commission,
             "total_value": self.total_value,
             "realized_pnl": self.realized_pnl,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "exit_time": self.exit_time.isoformat() if self.exit_time else None,
+            "holding_period_minutes": self.holding_period_minutes,
+            "exit_reason": self.exit_reason,
         }
 
 
@@ -530,6 +540,66 @@ class MarketRegime(Base):
             "metrics": json.loads(self.metrics_json) if self.metrics_json else {},
             "model_accuracy_in_regime": self.model_accuracy_in_regime,
             "model_pnl_in_regime": self.model_pnl_in_regime,
+        }
+
+
+class StabilityReportRecord(Base):
+    """Stability reports for ML models (weekly/monthly)."""
+
+    __tablename__ = "stability_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=False, index=True)
+    model_name = Column(String(100), nullable=False, index=True)
+    report_type = Column(String(20), nullable=False)  # weekly, monthly
+
+    # Time period
+    period_start = Column(DateTime, nullable=False)
+    period_end = Column(DateTime, nullable=False)
+
+    # Accuracy metrics
+    accuracy = Column(Float)
+    accuracy_change = Column(Float)
+    accuracy_trend = Column(String(20))  # improving, declining, stable
+
+    # Feature drift metrics
+    feature_drift_score = Column(Float, default=0.0)
+    drifted_features_json = Column(Text)  # JSON list of feature names
+
+    # Calibration metrics
+    calibration_ece = Column(Float)
+    is_well_calibrated = Column(Boolean, default=True)
+
+    # Alerts and summary
+    alerts_json = Column(Text)  # JSON list of alert strings
+    summary = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index("ix_stability_model_period", "model_id", "period_end"),
+        Index("ix_stability_type_date", "report_type", "period_end"),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "id": self.id,
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "report_type": self.report_type,
+            "period_start": self.period_start.isoformat() if self.period_start else None,
+            "period_end": self.period_end.isoformat() if self.period_end else None,
+            "accuracy": self.accuracy,
+            "accuracy_change": self.accuracy_change,
+            "accuracy_trend": self.accuracy_trend,
+            "feature_drift_score": self.feature_drift_score,
+            "drifted_features": json.loads(self.drifted_features_json) if self.drifted_features_json else [],
+            "calibration_ece": self.calibration_ece,
+            "is_well_calibrated": self.is_well_calibrated,
+            "alerts": json.loads(self.alerts_json) if self.alerts_json else [],
+            "summary": self.summary,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 

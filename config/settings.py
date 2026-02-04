@@ -10,6 +10,18 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class GoLiveSettings(BaseSettings):
+    """Go-live readiness thresholds."""
+    min_trades: int = 100
+    min_profit_factor: float = 1.2
+    min_sharpe: float = 0.8
+    min_win_rate: float = 0.45
+    max_drawdown: float = 0.15
+    min_regimes: int = 2
+    regime_vix_high_threshold: float = 25.0
+    regime_vix_low_threshold: float = 15.0
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -36,6 +48,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_file: Path | None = None
+
+    # Go-live settings
+    go_live: GoLiveSettings = Field(default_factory=GoLiveSettings)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

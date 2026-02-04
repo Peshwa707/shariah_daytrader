@@ -30,6 +30,7 @@ PID_DIR="$PROJECT_DIR/.pids"
 # PID files
 BOT_PID_FILE="$PID_DIR/bot.pid"
 DASHBOARD_PID_FILE="$PID_DIR/dashboard.pid"
+CAFFEINATE_PID_FILE="$PID_DIR/caffeinate.pid"
 
 # Log files
 BOT_LOG="$LOG_DIR/bot.log"
@@ -202,6 +203,45 @@ stop_component() {
     log_info "$name stopped"
 }
 
+# Start caffeinate to prevent Mac sleep
+start_caffeinate() {
+    if is_running "$CAFFEINATE_PID_FILE"; then
+        log_info "Caffeinate already running (PID: $(get_pid "$CAFFEINATE_PID_FILE"))"
+        return 0
+    fi
+
+    log_info "Starting caffeinate to prevent system sleep..."
+
+    # -i: Prevent idle sleep
+    # -m: Prevent disk sleep
+    # -s: Prevent system sleep (AC power only - falls back gracefully on battery)
+    caffeinate -i -m -s &
+    local pid=$!
+    echo "$pid" > "$CAFFEINATE_PID_FILE"
+
+    sleep 1
+    if is_running "$CAFFEINATE_PID_FILE"; then
+        log_info "Caffeinate started (PID: $pid) - Mac will stay awake"
+    else
+        log_warn "Caffeinate may not have started (check power state)"
+        rm -f "$CAFFEINATE_PID_FILE"
+    fi
+}
+
+# Stop caffeinate
+stop_caffeinate() {
+    if ! is_running "$CAFFEINATE_PID_FILE"; then
+        rm -f "$CAFFEINATE_PID_FILE"
+        return 0
+    fi
+
+    local pid=$(get_pid "$CAFFEINATE_PID_FILE")
+    log_info "Stopping caffeinate (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+    rm -f "$CAFFEINATE_PID_FILE"
+    log_info "Caffeinate stopped - Mac can sleep normally"
+}
+
 # Open dashboard in browser
 open_browser() {
     sleep 2
@@ -224,6 +264,9 @@ cmd_start() {
 
     log_info "Starting full system..."
     echo
+
+    # Prevent Mac from sleeping while trading
+    start_caffeinate
 
     start_bot
     start_dashboard
@@ -249,6 +292,7 @@ cmd_stop() {
 
     stop_component "Trading bot" "$BOT_PID_FILE"
     stop_component "Dashboard" "$DASHBOARD_PID_FILE"
+    stop_caffeinate
 
     echo
     log_info "All components stopped"
@@ -286,6 +330,14 @@ cmd_status() {
         echo -e "  Dashboard:    ${RED}STOPPED${NC}"
     fi
 
+    # Caffeinate status (wake lock)
+    if is_running "$CAFFEINATE_PID_FILE"; then
+        local pid=$(get_pid "$CAFFEINATE_PID_FILE")
+        echo -e "  Wake Lock:    ${GREEN}ACTIVE${NC} (PID: $pid)"
+    else
+        echo -e "  Wake Lock:    ${YELLOW}INACTIVE${NC} (Mac may sleep)"
+    fi
+
     echo "─────────────────────────────────────────"
 
     # Check IBKR connection via status command
@@ -306,6 +358,7 @@ cmd_bot() {
     print_banner
     setup_dirs
     check_venv
+    start_caffeinate
     start_bot
 }
 

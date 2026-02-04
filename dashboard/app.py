@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.ibkr_config import ibkr_config
 from config.settings import settings
+from dashboard.pages.go_live_checklist import render_go_live_checklist
 
 # Page config
 st.set_page_config(
@@ -131,7 +132,7 @@ def render_sidebar():
         st.subheader("Navigation")
         page = st.radio(
             "Select Page",
-            ["📊 Dashboard", "💼 Positions", "📈 Signals", "☪️ Shariah Screen", "🤖 ML Models", "⚙️ Settings"],
+            ["📊 Dashboard", "💼 Positions", "📈 Signals", "☪️ Shariah Screen", "🤖 ML Models", "🚀 Go-Live Checklist", "⚙️ Settings"],
             label_visibility="collapsed",
         )
 
@@ -913,6 +914,8 @@ def main():
         render_shariah_screen()
     elif page == "🤖 ML Models":
         render_ml_models()
+    elif page == "🚀 Go-Live Checklist":
+        render_go_live_checklist()
     elif page == "⚙️ Settings":
         render_settings()
 

@@ -54,6 +54,11 @@ class IBKRConfig(BaseSettings):
         description="1=Live, 2=Frozen, 3=Delayed, 4=Delayed Frozen"
     )
 
+    # Keepalive/heartbeat settings
+    keepalive_enabled: bool = Field(default=True, description="Enable periodic connection health checks")
+    keepalive_interval: int = Field(default=60, description="Seconds between keepalive pings")
+    keepalive_timeout: int = Field(default=10, description="Timeout for keepalive ping in seconds")
+
     @property
     def port(self) -> int:
         """Get the appropriate port based on mode and gateway preference."""

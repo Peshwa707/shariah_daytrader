@@ -165,6 +165,11 @@ class IBKRClient:
         # Lock for connection operations
         self._connection_lock = asyncio.Lock()
 
+        # Keepalive state
+        self._keepalive_task: asyncio.Task | None = None
+        self._last_heartbeat: datetime | None = None
+        self._heartbeat_failures: int = 0
+
     @property
     def is_connected(self) -> bool:
         """Check if connected to IBKR."""
@@ -244,6 +249,10 @@ class IBKRClient:
                 if self.config.auto_reconnect:
                     self._ib.disconnectedEvent += self._on_disconnect
 
+                # Start keepalive heartbeat
+                if self.config.keepalive_enabled:
+                    self._start_keepalive()
+
                 return True
 
             except Exception as e:
@@ -252,10 +261,113 @@ class IBKRClient:
                 self._notify_state_change(ConnectionState.DISCONNECTED, str(e))
                 return False
 
+    def _start_keepalive(self) -> None:
+        """Start the keepalive heartbeat task."""
+        if self._keepalive_task is None or self._keepalive_task.done():
+            try:
+                loop = asyncio.get_running_loop()
+                self._keepalive_task = loop.create_task(self._keepalive_loop())
+                logger.info(f"Keepalive started (interval: {self.config.keepalive_interval}s)")
+            except RuntimeError:
+                logger.warning("No event loop for keepalive - will start on next connect")
+
+    def _stop_keepalive(self) -> None:
+        """Stop the keepalive heartbeat task."""
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+            try:
+                # Don't await here as we might be in a non-async context
+                pass
+            except Exception:
+                pass
+            self._keepalive_task = None
+            logger.info("Keepalive stopped")
+
+    async def _keepalive_loop(self) -> None:
+        """
+        Periodic heartbeat to keep connection alive and detect issues early.
+
+        Performs lightweight IBKR API calls at regular intervals to:
+        1. Prevent connection timeout from inactivity
+        2. Detect connection issues before they cause trading failures
+        3. Log connection health metrics
+        """
+        logger.info("Keepalive heartbeat loop started")
+
+        while not self._shutdown_requested:
+            try:
+                await asyncio.sleep(self.config.keepalive_interval)
+
+                if self._shutdown_requested or not self.is_connected:
+                    break
+
+                # Perform heartbeat - request server time (lightweight)
+                success = await self._heartbeat_ping()
+
+                if success:
+                    self._heartbeat_failures = 0
+                    self._last_heartbeat = datetime.now()
+                    logger.debug(f"Heartbeat OK at {self._last_heartbeat}")
+                else:
+                    self._heartbeat_failures += 1
+                    logger.warning(f"Heartbeat failed (failures: {self._heartbeat_failures})")
+
+                    # If multiple failures, trigger reconnection check
+                    if self._heartbeat_failures >= 3:
+                        logger.error("Multiple heartbeat failures - checking connection")
+                        if not self._ib.isConnected():
+                            logger.warning("Connection lost - triggering reconnect")
+                            self._on_disconnect()
+                            break
+
+            except asyncio.CancelledError:
+                logger.info("Keepalive loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Keepalive error: {e}")
+                await asyncio.sleep(5)  # Brief pause on error
+
+        logger.info("Keepalive heartbeat loop ended")
+
+    async def _heartbeat_ping(self) -> bool:
+        """
+        Perform a lightweight heartbeat ping to IBKR.
+
+        Returns:
+            True if ping successful, False otherwise
+        """
+        if not self._ib or not self._ib.isConnected():
+            return False
+
+        try:
+            # Request server time - very lightweight API call
+            server_time = await asyncio.wait_for(
+                self._ib.reqCurrentTimeAsync(),
+                timeout=self.config.keepalive_timeout
+            )
+            return server_time is not None
+        except asyncio.TimeoutError:
+            logger.warning("Heartbeat ping timed out")
+            return False
+        except Exception as e:
+            logger.warning(f"Heartbeat ping error: {e}")
+            return False
+
+    @property
+    def last_heartbeat(self) -> datetime | None:
+        """Get the timestamp of the last successful heartbeat."""
+        return self._last_heartbeat
+
+    @property
+    def heartbeat_failures(self) -> int:
+        """Get the number of consecutive heartbeat failures."""
+        return self._heartbeat_failures
+
     def _on_disconnect(self) -> None:
         """Handle unexpected disconnection - trigger reconnection."""
         self._connected = False
         self._last_disconnect_time = datetime.now()
+        self._stop_keepalive()  # Stop keepalive on disconnect
 
         if self._shutdown_requested:
             logger.info("Disconnect after shutdown request - not reconnecting")
@@ -331,14 +443,19 @@ class IBKRClient:
                 )
 
                 self._connected = True
+                attempts_made = self._reconnect_attempts
                 self._reconnect_attempts = 0
-                logger.info(f"Reconnected to IBKR after {self._reconnect_attempts} attempts")
+                logger.info(f"Reconnected to IBKR after {attempts_made} attempts")
 
                 # Set market data type
                 self._ib.reqMarketDataType(self.config.market_data_type)
 
                 # Re-register disconnect handler
                 self._ib.disconnectedEvent += self._on_disconnect
+
+                # Restart keepalive
+                if self.config.keepalive_enabled:
+                    self._start_keepalive()
 
                 self._notify_state_change(ConnectionState.CONNECTED, "Reconnected")
                 return
@@ -358,6 +475,9 @@ class IBKRClient:
         """Disconnect from TWS/Gateway."""
         async with self._connection_lock:
             self._shutdown_requested = True
+
+            # Stop keepalive
+            self._stop_keepalive()
 
             # Cancel any pending reconnection
             if self._reconnect_task and not self._reconnect_task.done():

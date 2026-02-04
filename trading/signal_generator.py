@@ -23,6 +23,7 @@ from ml.features.price_action import PriceActionFeatures
 from ml.models.random_forest import RandomForestSignalModel
 from ml.models.lightgbm_model import LightGBMSignalModel
 from shariah.index_integration import load_shariah_universe, ShariahIndexIntegration
+from ml.regime.regime_detector import RegimeDetector, MarketRegimeResult
 from .execution_engine import Signal
 
 
@@ -114,6 +115,10 @@ class SignalGenerator:
         # Cache for historical data
         self._data_cache: dict[str, tuple[pd.DataFrame, datetime]] = {}
         self._cache_ttl_minutes: int = 5
+
+        # Regime detector for market context
+        self._regime_detector = RegimeDetector()
+        self._current_regime: MarketRegimeResult | None = None
 
     async def initialize(self) -> None:
         """Initialize the signal generator."""
@@ -437,6 +442,19 @@ class SignalGenerator:
         if not self._symbols:
             await self.initialize()
 
+        # Detect current market regime before scanning
+        try:
+            self._current_regime = self._regime_detector.detect_regime()
+            if self._current_regime:
+                logger.info(
+                    f"Market regime: {self._current_regime.regime_type} "
+                    f"(VIX: {self._current_regime.vix_level:.1f}, "
+                    f"SPY 20d: {self._current_regime.spy_return_20d:.2%})"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to detect market regime: {e}")
+            self._current_regime = None
+
         signals = []
 
         logger.info(f"Scanning {len(self._symbols)} symbols for signals...")
@@ -500,7 +518,7 @@ class SignalGenerator:
 
     def get_status(self) -> dict[str, Any]:
         """Get signal generator status."""
-        return {
+        status = {
             "symbols_loaded": len(self._symbols),
             "model_type": self.config.model_type,
             "model_trained": self._model_trained,
@@ -508,3 +526,15 @@ class SignalGenerator:
             "signals_generated": len(self._last_signal_time),
             "min_probability": self.config.min_probability,
         }
+
+        # Add current regime context
+        if self._current_regime:
+            status["market_regime"] = {
+                "type": self._current_regime.regime_type,
+                "vix_level": self._current_regime.vix_level,
+                "spy_return_20d": self._current_regime.spy_return_20d,
+                "confidence": self._current_regime.confidence,
+                "detected_at": self._current_regime.regime_date.isoformat(),
+            }
+
+        return status
