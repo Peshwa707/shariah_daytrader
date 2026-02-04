@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# Shariah Daytrader App Launcher
+# Launches the trading bot and dashboard
+#
+
+# Get the directory where this app bundle is located
+APP_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+# Check if we're inside the project directory
+if [ -f "$APP_DIR/launcher.sh" ]; then
+    PROJECT_DIR="$APP_DIR"
+else
+    # App might be in Applications or elsewhere - use hardcoded path
+    PROJECT_DIR="/Users/neurologic/Projects/shariah_daytrader"
+fi
+
+# Verify project exists
+if [ ! -f "$PROJECT_DIR/launcher.sh" ]; then
+    osascript -e 'display dialog "Shariah Daytrader project not found at:\n'"$PROJECT_DIR"'\n\nPlease update the app launcher path." buttons {"OK"} default button "OK" with icon stop with title "Shariah Daytrader"'
+    exit 1
+fi
+
+# Change to project directory
+cd "$PROJECT_DIR"
+
+# Check if already running
+if [ -f ".pids/bot.pid" ] && ps -p "$(cat .pids/bot.pid)" > /dev/null 2>&1; then
+    # Already running - show status dialog
+    BOT_PID=$(cat .pids/bot.pid)
+
+    CHOICE=$(osascript -e 'button returned of (display dialog "Shariah Daytrader is already running.\n\nBot PID: '"$BOT_PID"'\nDashboard: http://localhost:8501" buttons {"Open Dashboard", "Stop Bot", "OK"} default button "Open Dashboard" with title "Shariah Daytrader")')
+
+    case "$CHOICE" in
+        "Open Dashboard")
+            open "http://localhost:8501"
+            ;;
+        "Stop Bot")
+            ./launcher.sh stop
+            osascript -e 'display notification "Trading bot stopped" with title "Shariah Daytrader"'
+            ;;
+    esac
+    exit 0
+fi
+
+# Start the bot
+osascript -e 'display notification "Starting trading bot..." with title "Shariah Daytrader"'
+
+# Run launcher in background and capture output
+./launcher.sh start > /tmp/shariah_daytrader_launch.log 2>&1
+
+# Check if started successfully
+sleep 3
+if [ -f ".pids/bot.pid" ] && ps -p "$(cat .pids/bot.pid)" > /dev/null 2>&1; then
+    osascript -e 'display notification "Trading bot started successfully!\nDashboard: http://localhost:8501" with title "Shariah Daytrader" sound name "Glass"'
+
+    # Open dashboard in browser
+    open "http://localhost:8501"
+else
+    # Show error
+    ERROR_LOG=$(tail -20 /tmp/shariah_daytrader_launch.log)
+    osascript -e 'display dialog "Failed to start trading bot.\n\nCheck logs at:\n'"$PROJECT_DIR"'/logs/bot.log" buttons {"Open Logs", "OK"} default button "OK" with icon stop with title "Shariah Daytrader"'
+fi

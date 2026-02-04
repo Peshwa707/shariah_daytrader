@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# Shariah Daytrader Stop App
+# Stops the trading bot
+#
+
+# Get the directory where this app bundle is located
+APP_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+# Check if we're inside the project directory
+if [ -f "$APP_DIR/launcher.sh" ]; then
+    PROJECT_DIR="$APP_DIR"
+else
+    PROJECT_DIR="/Users/neurologic/Projects/shariah_daytrader"
+fi
+
+# Verify project exists
+if [ ! -f "$PROJECT_DIR/launcher.sh" ]; then
+    osascript -e 'display dialog "Shariah Daytrader project not found." buttons {"OK"} default button "OK" with icon stop with title "Shariah Daytrader"'
+    exit 1
+fi
+
+cd "$PROJECT_DIR"
+
+# Check if running
+if [ ! -f ".pids/bot.pid" ] || ! ps -p "$(cat .pids/bot.pid 2>/dev/null)" > /dev/null 2>&1; then
+    osascript -e 'display notification "Trading bot is not running" with title "Shariah Daytrader"'
+    exit 0
+fi
+
+# Confirm stop
+CHOICE=$(osascript -e 'button returned of (display dialog "Stop the Shariah Daytrader bot?" buttons {"Cancel", "Stop"} default button "Stop" with title "Shariah Daytrader")')
+
+if [ "$CHOICE" = "Stop" ]; then
+    ./launcher.sh stop > /dev/null 2>&1
+    osascript -e 'display notification "Trading bot stopped" with title "Shariah Daytrader" sound name "Glass"'
+fi
