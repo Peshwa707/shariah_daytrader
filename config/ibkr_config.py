@@ -37,6 +37,14 @@ class IBKRConfig(BaseSettings):
     timeout: int = Field(default=60, description="Connection timeout in seconds")
     readonly: bool = Field(default=False, description="Read-only mode (no order submission)")
 
+    # Reconnection settings
+    auto_reconnect: bool = Field(default=True, description="Enable automatic reconnection")
+    reconnect_base_delay: float = Field(default=1.0, description="Initial reconnect delay in seconds")
+    reconnect_max_delay: float = Field(default=60.0, description="Maximum reconnect delay in seconds")
+    reconnect_multiplier: float = Field(default=2.0, description="Exponential backoff multiplier")
+    reconnect_max_attempts: int = Field(default=10, description="Max reconnection attempts (0=unlimited)")
+    reconnect_jitter: float = Field(default=0.1, description="Random jitter factor (0-1) to prevent thundering herd")
+
     # Use TWS or Gateway
     use_gateway: bool = Field(default=True, description="Use IB Gateway instead of TWS")
 

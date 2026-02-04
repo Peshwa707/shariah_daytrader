@@ -17,6 +17,7 @@ import pandas as pd
 
 from config.ibkr_config import ibkr_config
 from data.ibkr_client import IBKRClient
+from data.storage import DatabaseManager
 from ml.features.technical import TechnicalFeatures
 from ml.features.price_action import PriceActionFeatures
 from ml.models.random_forest import RandomForestSignalModel
@@ -26,6 +27,17 @@ from .execution_engine import Signal
 
 
 logger = logging.getLogger(__name__)
+
+# Global database manager for signal recording
+_db_manager: DatabaseManager | None = None
+
+def get_db_manager() -> DatabaseManager:
+    """Get or create the database manager."""
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+        logger.info("Database manager initialized for signal recording")
+    return _db_manager
 
 
 @dataclass
@@ -41,15 +53,26 @@ class SignalGeneratorConfig:
 
     # Model settings
     model_type: str = "lightgbm"  # "random_forest" or "lightgbm"
-    min_probability: float = 0.60  # Minimum probability for signal
+    min_probability: float = 0.40  # Minimum probability for signal (TEST MODE - 40% for testing)
 
     # Signal generation
-    signal_cooldown_minutes: int = 30  # Don't re-signal same stock within cooldown
-    max_signals_per_scan: int = 3  # Maximum signals per scan cycle
+    signal_cooldown_minutes: int = 5  # Don't re-signal same stock within cooldown (TEST MODE - 5 min)
+    max_signals_per_scan: int = 5  # Maximum signals per scan cycle (increased with hourly cap)
 
     # Feature settings
     use_technical_features: bool = True
     use_price_action_features: bool = True
+
+    # Timeframe settings (for momentum continuation model)
+    timeframe_mode: str = "daily"  # "intraday", "swing", "adaptive"
+    intraday_bar_size: str = "5 mins"
+    intraday_lookback_days: int = 5
+    swing_bar_size: str = "1 day"
+    swing_lookback_days: int = 180
+
+    # Momentum model settings
+    use_momentum_model: bool = True
+    min_momentum_score: float = 60.0  # Minimum momentum score (0-100) for signals
 
 
 class SignalGenerator:
@@ -233,6 +256,62 @@ class SignalGenerator:
         elapsed = datetime.now() - self._last_signal_time[symbol]
         return elapsed > timedelta(minutes=self.config.signal_cooldown_minutes)
 
+    def _record_prediction_outcome(
+        self,
+        db: DatabaseManager,
+        symbol: str,
+        signal_type: str,
+        probability: float,
+        signal_id: int | None = None,
+    ) -> int | None:
+        """
+        Record a prediction outcome for later evaluation.
+
+        Args:
+            db: Database manager instance
+            symbol: Stock symbol
+            signal_type: Signal type (buy, sell)
+            probability: Prediction probability
+            signal_id: Associated signal record ID
+
+        Returns:
+            Prediction outcome ID or None
+        """
+        try:
+            # Get active model ID
+            active_model = db.get_active_model("momentum_continuation")
+            if not active_model:
+                # Try lightgbm model
+                active_model = db.get_active_model(self.config.model_type)
+
+            model_id = active_model.get("id") if active_model else None
+
+            if not model_id:
+                logger.debug("No active model found for prediction outcome recording")
+                return None
+
+            # Map signal_type to predicted value and class
+            predicted_value = 1.0 if signal_type == "buy" else -1.0
+            predicted_class = "continuation" if signal_type == "buy" else "reversal"
+
+            prediction_id = db.record_prediction_outcome(
+                model_id=model_id,
+                symbol=symbol,
+                prediction_type="direction",
+                predicted_value=predicted_value,
+                predicted_probability=probability,
+                predicted_class=predicted_class,
+                signal_id=signal_id,
+                prediction_time=datetime.now(),
+            )
+
+            logger.debug(f"Prediction outcome recorded: ID={prediction_id}")
+            return prediction_id
+
+        except Exception as e:
+            logger.warning(f"Failed to record prediction outcome: {e}")
+            return None
+
     async def _analyze_symbol(self, symbol: str) -> Signal | None:
         """
         Analyze a single symbol and generate signal if appropriate.
@@ -312,6 +391,33 @@ class SignalGenerator:
 
             # Update last signal time
             self._last_signal_time[symbol] = datetime.now()
+
+            # Record signal to database for ML learning
+            signal_record_id = None
+            try:
+                db = get_db_manager()
+                signal_record = {
+                    "symbol": symbol,
+                    "signal_date": datetime.now(),
+                    "model_name": self.config.model_type,
+                    "signal_type": signal_type,
+                    "confidence": confidence,
+                    "probability": prob,
+                    "features": signal.features,
+                }
+                signal_record_id = db.save_signal(signal_record)
+                logger.info(f"Signal recorded to DB: ID={signal_record_id}, {signal_type.upper()} {symbol} (prob: {prob:.2%})")
+
+                # Record prediction outcome for tracking
+                self._record_prediction_outcome(
+                    db=db,
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    probability=prob,
+                    signal_id=signal_record_id,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record signal to DB: {e}")
 
             logger.info(f"Generated {signal_type.upper()} signal for {symbol} (prob: {prob:.2%})")
 

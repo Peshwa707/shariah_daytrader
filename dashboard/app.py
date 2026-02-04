@@ -379,54 +379,475 @@ def render_shariah_screen():
 
 
 def render_ml_models():
-    """Render ML models page."""
+    """Render ML models page with comprehensive insights."""
     st.header("🤖 ML Model Performance")
 
+    # Initialize database manager
+    from data.storage import DatabaseManager
+    db = DatabaseManager()
+
     # Model selection
-    model_type = st.selectbox("Select Model", ["LightGBM", "Random Forest"])
+    model_name = st.selectbox(
+        "Select Model",
+        ["momentum_continuation", "lightgbm", "random_forest"],
+        index=0,
+    )
 
-    st.divider()
+    # Create tabs for different insight views
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🎯 Health Scorecard",
+        "📊 Feature Drift",
+        "📈 Calibration",
+        "🌊 Regime Matrix",
+        "📋 Learning Events",
+    ])
 
-    # Demo metrics
+    # Get model health metrics
+    health = db.get_model_health_metrics(model_name)
+    active_model = db.get_active_model(model_name)
+
+    with tab1:
+        render_health_scorecard(db, model_name, health, active_model)
+
+    with tab2:
+        render_feature_drift(db, model_name, active_model)
+
+    with tab3:
+        render_calibration(db, model_name, active_model)
+
+    with tab4:
+        render_regime_matrix(db)
+
+    with tab5:
+        render_learning_events(db, active_model)
+
+
+def render_health_scorecard(db, model_name: str, health: dict, active_model: dict | None):
+    """Render the health scorecard tab."""
+    st.subheader("Model Health Overview")
+
+    if health.get("status") == "no_active_model":
+        st.warning(f"No active model found for '{model_name}'")
+        st.info("Train and activate a model to see health metrics")
+        return
+
+    # Traffic light indicators
     col1, col2, col3, col4 = st.columns(4)
 
+    # Accuracy indicator
+    accuracy = health.get("accuracy_7d")
     with col1:
-        st.metric("Accuracy", "62.5%", "+2.1%")
+        if accuracy is None:
+            st.metric("7-Day Accuracy", "N/A", help="Not enough predictions")
+            st.caption("⚪ No data")
+        elif accuracy >= 0.60:
+            st.metric("7-Day Accuracy", f"{accuracy:.1%}", help="Healthy")
+            st.caption("🟢 Healthy")
+        elif accuracy >= 0.55:
+            st.metric("7-Day Accuracy", f"{accuracy:.1%}", help="Acceptable")
+            st.caption("🟡 Acceptable")
+        else:
+            st.metric("7-Day Accuracy", f"{accuracy:.1%}", help="Below threshold")
+            st.caption("🔴 Below threshold")
+
+    # Calibration indicator
+    ece = health.get("calibration_ece")
     with col2:
-        st.metric("Precision", "68.3%", "+1.5%")
+        if ece is None:
+            st.metric("Calibration (ECE)", "N/A", help="No calibration data")
+            st.caption("⚪ No data")
+        elif ece <= 0.05:
+            st.metric("Calibration (ECE)", f"{ece:.4f}", help="Well calibrated")
+            st.caption("🟢 Well calibrated")
+        elif ece <= 0.10:
+            st.metric("Calibration (ECE)", f"{ece:.4f}", help="Acceptable")
+            st.caption("🟡 Acceptable")
+        else:
+            st.metric("Calibration (ECE)", f"{ece:.4f}", help="Poorly calibrated")
+            st.caption("🔴 Needs attention")
+
+    # Freshness indicator
+    days_since = health.get("days_since_training")
     with col3:
-        st.metric("Recall", "71.2%", "-0.8%")
+        if days_since is None:
+            st.metric("Model Age", "Unknown")
+            st.caption("⚪ No data")
+        elif days_since <= 7:
+            st.metric("Model Age", f"{days_since} days")
+            st.caption("🟢 Fresh")
+        elif days_since <= 14:
+            st.metric("Model Age", f"{days_since} days")
+            st.caption("🟡 Aging")
+        else:
+            st.metric("Model Age", f"{days_since} days")
+            st.caption("🔴 Stale")
+
+    # Alerts indicator
+    drift_alerts = health.get("drift_alerts", 0)
+    open_events = health.get("open_events", 0)
     with col4:
-        st.metric("F1 Score", "69.7%", "+0.4%")
+        total_issues = drift_alerts + open_events
+        if total_issues == 0:
+            st.metric("Open Issues", "0")
+            st.caption("🟢 Clear")
+        elif total_issues <= 2:
+            st.metric("Open Issues", str(total_issues))
+            st.caption("🟡 Minor")
+        else:
+            st.metric("Open Issues", str(total_issues))
+            st.caption("🔴 Needs attention")
 
     st.divider()
 
-    # Feature importance (demo)
-    st.subheader("Feature Importance")
+    # Training metrics
+    if active_model:
+        st.subheader("Training Metrics")
+        metrics = health.get("training_metrics", {})
 
-    importance_data = pd.DataFrame({
-        'feature': ['rsi_14', 'macd', 'bb_pct', 'atr_14', 'volume_sma_ratio', 'close_sma_20_ratio'],
-        'importance': [0.18, 0.15, 0.14, 0.12, 0.11, 0.10]
-    })
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Direction Accuracy", f"{metrics.get('direction_accuracy', 0):.2%}")
+        with col2:
+            st.metric("Direction F1", f"{metrics.get('direction_f1', 0):.2%}")
+        with col3:
+            st.metric("Magnitude MAE", f"{metrics.get('magnitude_mae', 0):.4f}")
+        with col4:
+            st.metric("Duration MAE", f"{metrics.get('duration_mae', 0):.2f} bars")
 
-    st.bar_chart(importance_data.set_index('feature'))
+        # Model info
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption(f"Model Version: {health.get('model_version', 'N/A')}")
+            st.caption(f"Predictions (7d): {health.get('predictions_7d', 0)}")
+        with col2:
+            st.caption(f"Model ID: {health.get('model_id', 'N/A')}")
+            st.caption(f"Status: {health.get('status', 'N/A')}")
 
-    st.divider()
 
-    # Training controls
-    st.subheader("Model Training")
+def render_feature_drift(db, model_name: str, active_model: dict | None):
+    """Render the feature drift tab."""
+    st.subheader("Feature Importance Drift")
 
-    col1, col2 = st.columns(2)
+    if not active_model:
+        st.warning("No active model found")
+        return
 
+    model_id = active_model.get("id")
+
+    # Get feature importance history
+    history = db.get_feature_importance_history(model_id, limit=5)
+
+    if not history:
+        st.info("No feature importance data available yet")
+        st.caption("Feature importance is recorded after model training")
+        return
+
+    # Get drift alerts
+    alerts = db.get_feature_drift_alerts(model_id, rank_change_threshold=5, top_n=10)
+
+    if alerts:
+        st.warning(f"{len(alerts)} feature drift alert(s) detected")
+        for alert in alerts:
+            if alert["type"] == "rank_change":
+                change = alert.get("change", 0)
+                icon = "📈" if change > 0 else "📉"
+                st.write(f"{icon} **{alert['feature']}**: Rank {alert['previous_rank']} → {alert['current_rank']} ({change:+d})")
+
+        st.divider()
+
+    # Build dataframe for visualization
+    # Group by recorded_at to get snapshots
+    snapshots = {}
+    for record in history:
+        recorded = record["recorded_at"][:10]  # Date only
+        if recorded not in snapshots:
+            snapshots[recorded] = {}
+        if record.get("model_component") == "combined":
+            snapshots[recorded][record["feature_name"]] = record["rank"]
+
+    if snapshots:
+        # Create bump chart data
+        dates = sorted(snapshots.keys())
+        features = set()
+        for snapshot in snapshots.values():
+            features.update(snapshot.keys())
+
+        # Only show top 10 features
+        feature_list = list(features)[:10]
+
+        chart_data = []
+        for feat in feature_list:
+            for date in dates:
+                rank = snapshots.get(date, {}).get(feat)
+                if rank:
+                    chart_data.append({"date": date, "feature": feat, "rank": rank})
+
+        if chart_data:
+            df = pd.DataFrame(chart_data)
+            st.subheader("Feature Rank Over Time (Top 10)")
+
+            # Pivot for display
+            pivot_df = df.pivot(index="feature", columns="date", values="rank")
+            st.dataframe(pivot_df, use_container_width=True)
+
+            # Current importance scores
+            st.divider()
+            st.subheader("Current Feature Importance")
+
+            latest_date = max(dates)
+            latest_records = [r for r in history if r["recorded_at"][:10] == latest_date and r.get("model_component") == "combined"]
+            latest_records.sort(key=lambda x: x["rank"])
+
+            if latest_records:
+                importance_df = pd.DataFrame([
+                    {"feature": r["feature_name"], "importance": r["importance_score"]}
+                    for r in latest_records[:15]
+                ])
+                st.bar_chart(importance_df.set_index("feature"))
+
+
+def render_calibration(db, model_name: str, active_model: dict | None):
+    """Render the calibration tab."""
+    st.subheader("Model Calibration")
+
+    if not active_model:
+        st.warning("No active model found")
+        return
+
+    model_id = active_model.get("id")
+
+    # Get calibration history
+    cal_history = db.get_calibration_history(model_id, limit=12)
+
+    if not cal_history:
+        st.info("No calibration data available yet")
+
+        # Option to compute calibration
+        if st.button("Compute Calibration Metrics"):
+            try:
+                from ml.insights.monitor import MLInsightsMonitor
+                monitor = MLInsightsMonitor(db_manager=db)
+                metrics = monitor.compute_calibration_metrics(model_name, days=7)
+
+                if metrics:
+                    # Save to database
+                    db.save_calibration_report(
+                        model_id=model_id,
+                        period_start=datetime.now() - timedelta(days=7),
+                        period_end=datetime.now(),
+                        sample_count=metrics["sample_count"],
+                        ece=metrics["ece"],
+                        mce=metrics["mce"],
+                        brier_score=metrics["brier_score"],
+                        log_loss=metrics["log_loss"],
+                        reliability_diagram=metrics["reliability_diagram"],
+                    )
+                    st.success("Calibration metrics computed and saved!")
+                    st.rerun()
+                else:
+                    st.warning("Not enough prediction data for calibration")
+            except Exception as e:
+                st.error(f"Error computing calibration: {e}")
+        return
+
+    # Display latest calibration
+    latest = cal_history[0]
+
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        lookback = st.slider("Lookback Days", 60, 365, 180)
-        min_prob = st.slider("Min Probability", 0.50, 0.80, 0.58)
-
+        ece = latest.get("expected_calibration_error")
+        st.metric("ECE", f"{ece:.4f}" if ece else "N/A")
     with col2:
-        if st.button("Retrain Model", use_container_width=True):
-            with st.spinner("Training model..."):
-                # Would retrain model here
-                st.success("Model retrained!")
+        brier = latest.get("brier_score")
+        st.metric("Brier Score", f"{brier:.4f}" if brier else "N/A")
+    with col3:
+        st.metric("Samples", latest.get("sample_count", "N/A"))
+    with col4:
+        is_cal = latest.get("is_well_calibrated")
+        st.metric("Status", "✅ Well Calibrated" if is_cal else "⚠️ Needs Attention")
+
+    st.divider()
+
+    # Reliability diagram
+    reliability = latest.get("reliability_diagram", [])
+    if reliability:
+        st.subheader("Reliability Diagram")
+
+        rel_df = pd.DataFrame(reliability)
+        if not rel_df.empty:
+            # Perfect calibration line
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write("**Predicted vs Actual Accuracy**")
+                chart_df = rel_df[["bin_center", "accuracy", "confidence"]].copy()
+                chart_df = chart_df.rename(columns={"bin_center": "Confidence Bin", "accuracy": "Actual", "confidence": "Predicted"})
+                st.line_chart(chart_df.set_index("Confidence Bin"))
+
+            with col2:
+                st.write("**Bin Counts**")
+                st.bar_chart(rel_df.set_index("bin_center")["count"])
+
+    # Calibration history trend
+    if len(cal_history) > 1:
+        st.divider()
+        st.subheader("Calibration History")
+
+        history_df = pd.DataFrame([
+            {
+                "date": h.get("period_end", "")[:10],
+                "ECE": h.get("expected_calibration_error"),
+                "Brier": h.get("brier_score"),
+            }
+            for h in cal_history
+        ])
+        history_df = history_df.dropna()
+        if not history_df.empty:
+            st.line_chart(history_df.set_index("date"))
+
+
+def render_regime_matrix(db):
+    """Render the regime matrix tab."""
+    st.subheader("Market Regime Analysis")
+
+    # Get regime history
+    regimes = db.get_regime_history(days=30)
+
+    if not regimes:
+        st.info("No market regime data available")
+        st.caption("Regime detection runs daily and classifies market conditions")
+        return
+
+    # Current regime
+    current = regimes[0] if regimes else None
+    if current:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            regime_type = current.get("regime_type", "unknown")
+            regime_emoji = {
+                "trending_up": "📈",
+                "trending_down": "📉",
+                "volatile": "🌊",
+                "quiet": "😴",
+                "mixed": "🔀",
+            }.get(regime_type, "❓")
+            st.metric("Current Regime", f"{regime_emoji} {regime_type.replace('_', ' ').title()}")
+        with col2:
+            conf = current.get("regime_confidence")
+            st.metric("Confidence", f"{conf:.1%}" if conf else "N/A")
+        with col3:
+            st.metric("VIX Level", f"{current.get('vix_level', 'N/A')}")
+
+    st.divider()
+
+    # Regime history table
+    st.subheader("Recent Regime History")
+
+    regime_df = pd.DataFrame([
+        {
+            "Date": r.get("regime_date"),
+            "Regime": r.get("regime_type", "").replace("_", " ").title(),
+            "Confidence": f"{r.get('regime_confidence', 0):.1%}" if r.get("regime_confidence") else "N/A",
+            "VIX": r.get("vix_level"),
+            "S&P Return": f"{r.get('sp500_return_pct', 0):.2%}" if r.get("sp500_return_pct") else "N/A",
+            "Model Accuracy": f"{r.get('model_accuracy_in_regime', 0):.1%}" if r.get("model_accuracy_in_regime") else "N/A",
+        }
+        for r in regimes[:14]  # Last 2 weeks
+    ])
+
+    st.dataframe(regime_df, use_container_width=True, hide_index=True)
+
+    # Regime distribution
+    st.divider()
+    st.subheader("Regime Distribution (30 Days)")
+
+    regime_counts = {}
+    for r in regimes:
+        rt = r.get("regime_type", "unknown")
+        regime_counts[rt] = regime_counts.get(rt, 0) + 1
+
+    if regime_counts:
+        dist_df = pd.DataFrame([
+            {"Regime": k.replace("_", " ").title(), "Days": v}
+            for k, v in regime_counts.items()
+        ])
+        st.bar_chart(dist_df.set_index("Regime"))
+
+
+def render_learning_events(db, active_model: dict | None):
+    """Render the learning events tab."""
+    st.subheader("Learning Events & Alerts")
+
+    # Get open events
+    open_events = db.get_open_learning_events()
+
+    if open_events:
+        st.warning(f"{len(open_events)} open event(s) requiring attention")
+
+        for event in open_events[:10]:
+            severity = event.get("severity", "info")
+            severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(severity, "📋")
+
+            with st.expander(f"{severity_emoji} {event.get('title', 'Event')} - {event.get('event_time', '')[:10]}"):
+                st.write(f"**Category:** {event.get('category', 'N/A')}")
+                st.write(f"**Description:** {event.get('description', 'N/A')}")
+
+                if event.get("requires_action"):
+                    st.info("⚡ Action required")
+
+                details = event.get("details", {})
+                if details:
+                    st.json(details)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Acknowledge", key=f"ack_{event['id']}"):
+                        db.acknowledge_learning_event(event["id"])
+                        st.rerun()
+                with col2:
+                    if st.button("Resolve", key=f"res_{event['id']}"):
+                        db.resolve_learning_event(event["id"], "Resolved via dashboard")
+                        st.rerun()
+
+        st.divider()
+
+    # Recent events history
+    st.subheader("Recent Events History")
+
+    history = db.get_learning_events_history(days=30, limit=50)
+
+    if not history:
+        st.info("No learning events recorded yet")
+        return
+
+    # Filter controls
+    col1, col2 = st.columns(2)
+    with col1:
+        filter_severity = st.selectbox("Filter by Severity", ["All", "info", "warning", "critical"])
+    with col2:
+        filter_type = st.selectbox("Filter by Type", ["All", "alert", "insight", "adaptation", "retrain_trigger"])
+
+    # Apply filters
+    filtered = history
+    if filter_severity != "All":
+        filtered = [e for e in filtered if e.get("severity") == filter_severity]
+    if filter_type != "All":
+        filtered = [e for e in filtered if e.get("event_type") == filter_type]
+
+    # Display events
+    events_df = pd.DataFrame([
+        {
+            "Time": e.get("event_time", "")[:16],
+            "Type": e.get("event_type", ""),
+            "Severity": e.get("severity", ""),
+            "Title": e.get("title", ""),
+            "Status": e.get("status", ""),
+        }
+        for e in filtered[:20]
+    ])
+
+    st.dataframe(events_df, use_container_width=True, hide_index=True)
 
 
 def render_settings():

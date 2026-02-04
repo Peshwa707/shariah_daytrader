@@ -12,13 +12,20 @@ Setup Requirements:
 
 Note: ib_async is the successor to ib_insync and provides
 asyncio-native IBKR API access.
+
+Features:
+- Automatic reconnection with exponential backoff
+- Connection health monitoring
+- Graceful degradation during reconnection
 """
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from dataclasses import dataclass, field
+from enum import Enum, auto
 import logging
 
 import pandas as pd
@@ -26,6 +33,7 @@ import pandas as pd
 # ib_async imports (these will fail if not installed - that's expected)
 try:
     from ib_async import IB, Stock, Contract, BarData, Ticker
+    from ib_async import MarketOrder, LimitOrder, StopOrder
     from ib_async import util
     IB_AVAILABLE = True
 except ImportError:
@@ -33,11 +41,27 @@ except ImportError:
     IB = None
     Stock = None
     Contract = None
+    MarketOrder = None
+    LimitOrder = None
+    StopOrder = None
 
 from config.ibkr_config import ibkr_config
 
 
 logger = logging.getLogger(__name__)
+
+
+class ConnectionState(Enum):
+    """Connection state for IBKR client."""
+    DISCONNECTED = auto()
+    CONNECTING = auto()
+    CONNECTED = auto()
+    RECONNECTING = auto()
+    FAILED = auto()  # Circuit breaker tripped
+
+
+# Type alias for connection state callback
+ConnectionCallback = Callable[["ConnectionState", str | None], None]
 
 
 @dataclass
@@ -108,6 +132,7 @@ class IBKRClient:
     - Streaming real-time quotes
     - Retrieving account positions
     - Placing orders (paper trading)
+    - Automatic reconnection with exponential backoff
     """
 
     def __init__(self, config: ibkr_config.__class__ | None = None):
@@ -127,10 +152,56 @@ class IBKRClient:
         self._connected = False
         self._contracts_cache: dict[str, Contract] = {}
 
+        # Reconnection state
+        self._connection_state = ConnectionState.DISCONNECTED
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_attempts = 0
+        self._last_disconnect_time: datetime | None = None
+        self._shutdown_requested = False
+
+        # Callbacks for connection state changes
+        self._connection_callbacks: list[ConnectionCallback] = []
+
+        # Lock for connection operations
+        self._connection_lock = asyncio.Lock()
+
     @property
     def is_connected(self) -> bool:
         """Check if connected to IBKR."""
         return self._connected and self._ib is not None and self._ib.isConnected()
+
+    @property
+    def connection_state(self) -> ConnectionState:
+        """Get current connection state."""
+        return self._connection_state
+
+    @property
+    def is_reconnecting(self) -> bool:
+        """Check if currently attempting to reconnect."""
+        return self._connection_state == ConnectionState.RECONNECTING
+
+    def add_connection_callback(self, callback: ConnectionCallback) -> None:
+        """
+        Register a callback for connection state changes.
+
+        Args:
+            callback: Function called with (new_state, error_message)
+        """
+        self._connection_callbacks.append(callback)
+
+    def remove_connection_callback(self, callback: ConnectionCallback) -> None:
+        """Remove a connection callback."""
+        if callback in self._connection_callbacks:
+            self._connection_callbacks.remove(callback)
+
+    def _notify_state_change(self, state: ConnectionState, message: str | None = None) -> None:
+        """Notify all callbacks of state change."""
+        self._connection_state = state
+        for callback in self._connection_callbacks:
+            try:
+                callback(state, message)
+            except Exception as e:
+                logger.error(f"Connection callback error: {e}")
 
     async def connect(self) -> bool:
         """
@@ -139,43 +210,211 @@ class IBKRClient:
         Returns:
             True if connection successful
         """
-        if self.is_connected:
-            logger.info("Already connected to IBKR")
-            return True
+        async with self._connection_lock:
+            if self.is_connected:
+                logger.info("Already connected to IBKR")
+                return True
 
-        self._ib = IB()
+            self._shutdown_requested = False
+            self._notify_state_change(ConnectionState.CONNECTING)
 
-        try:
-            await self._ib.connectAsync(
-                host=self.config.host,
-                port=self.config.port,
-                clientId=self.config.client_id,
-                timeout=self.config.timeout,
-                readonly=self.config.readonly,
-            )
+            self._ib = IB()
 
-            self._connected = True
+            try:
+                await self._ib.connectAsync(
+                    host=self.config.host,
+                    port=self.config.port,
+                    clientId=self.config.client_id,
+                    timeout=self.config.timeout,
+                    readonly=self.config.readonly,
+                )
+
+                self._connected = True
+                self._reconnect_attempts = 0
+                self._notify_state_change(ConnectionState.CONNECTED)
+                logger.info(
+                    f"Connected to IBKR at {self.config.host}:{self.config.port} "
+                    f"(mode: {self.config.mode})"
+                )
+
+                # Set market data type
+                self._ib.reqMarketDataType(self.config.market_data_type)
+
+                # Register disconnect handler for auto-reconnect
+                if self.config.auto_reconnect:
+                    self._ib.disconnectedEvent += self._on_disconnect
+
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to connect to IBKR: {e}")
+                self._connected = False
+                self._notify_state_change(ConnectionState.DISCONNECTED, str(e))
+                return False
+
+    def _on_disconnect(self) -> None:
+        """Handle unexpected disconnection - trigger reconnection."""
+        self._connected = False
+        self._last_disconnect_time = datetime.now()
+
+        if self._shutdown_requested:
+            logger.info("Disconnect after shutdown request - not reconnecting")
+            self._notify_state_change(ConnectionState.DISCONNECTED)
+            return
+
+        if not self.config.auto_reconnect:
+            logger.warning("IBKR disconnected - auto-reconnect disabled")
+            self._notify_state_change(ConnectionState.DISCONNECTED, "Disconnected (auto-reconnect disabled)")
+            return
+
+        logger.warning("IBKR disconnected unexpectedly - starting reconnection")
+        self._notify_state_change(ConnectionState.RECONNECTING, "Unexpected disconnect")
+
+        # Start reconnection in background
+        if self._reconnect_task is None or self._reconnect_task.done():
+            try:
+                loop = asyncio.get_running_loop()
+                self._reconnect_task = loop.create_task(self._reconnect_loop())
+            except RuntimeError:
+                # No running event loop - will need manual reconnection
+                logger.error("No event loop for reconnection - call connect() manually")
+                self._notify_state_change(ConnectionState.DISCONNECTED)
+
+    async def _reconnect_loop(self) -> None:
+        """
+        Attempt to reconnect with exponential backoff.
+
+        Implements:
+        - Exponential backoff with jitter
+        - Maximum retry limit (circuit breaker)
+        - Configurable delays
+        """
+        delay = self.config.reconnect_base_delay
+
+        while not self._shutdown_requested:
+            self._reconnect_attempts += 1
+
+            # Check circuit breaker
+            max_attempts = self.config.reconnect_max_attempts
+            if max_attempts > 0 and self._reconnect_attempts > max_attempts:
+                logger.error(
+                    f"Max reconnection attempts ({max_attempts}) exceeded - circuit breaker tripped"
+                )
+                self._notify_state_change(
+                    ConnectionState.FAILED,
+                    f"Max attempts ({max_attempts}) exceeded"
+                )
+                return
+
             logger.info(
-                f"Connected to IBKR at {self.config.host}:{self.config.port} "
-                f"(mode: {self.config.mode})"
+                f"Reconnection attempt {self._reconnect_attempts}"
+                + (f"/{max_attempts}" if max_attempts > 0 else "")
+                + f" in {delay:.1f}s"
             )
 
-            # Set market data type
-            self._ib.reqMarketDataType(self.config.market_data_type)
+            # Wait with jitter
+            jitter = delay * self.config.reconnect_jitter * random.random()
+            await asyncio.sleep(delay + jitter)
 
-            return True
+            if self._shutdown_requested:
+                break
 
-        except Exception as e:
-            logger.error(f"Failed to connect to IBKR: {e}")
-            self._connected = False
-            return False
+            # Attempt connection
+            self._ib = IB()
+            try:
+                await self._ib.connectAsync(
+                    host=self.config.host,
+                    port=self.config.port,
+                    clientId=self.config.client_id,
+                    timeout=self.config.timeout,
+                    readonly=self.config.readonly,
+                )
+
+                self._connected = True
+                self._reconnect_attempts = 0
+                logger.info(f"Reconnected to IBKR after {self._reconnect_attempts} attempts")
+
+                # Set market data type
+                self._ib.reqMarketDataType(self.config.market_data_type)
+
+                # Re-register disconnect handler
+                self._ib.disconnectedEvent += self._on_disconnect
+
+                self._notify_state_change(ConnectionState.CONNECTED, "Reconnected")
+                return
+
+            except Exception as e:
+                logger.warning(f"Reconnection attempt {self._reconnect_attempts} failed: {e}")
+
+                # Exponential backoff
+                delay = min(
+                    delay * self.config.reconnect_multiplier,
+                    self.config.reconnect_max_delay
+                )
+
+        logger.info("Reconnection loop stopped (shutdown requested)")
 
     async def disconnect(self) -> None:
         """Disconnect from TWS/Gateway."""
-        if self._ib:
-            self._ib.disconnect()
-            self._connected = False
-            logger.info("Disconnected from IBKR")
+        async with self._connection_lock:
+            self._shutdown_requested = True
+
+            # Cancel any pending reconnection
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
+                try:
+                    await self._reconnect_task
+                except asyncio.CancelledError:
+                    pass
+                self._reconnect_task = None
+
+            if self._ib:
+                # Remove disconnect handler to prevent reconnection
+                if self.config.auto_reconnect:
+                    try:
+                        self._ib.disconnectedEvent -= self._on_disconnect
+                    except Exception:
+                        pass
+
+                self._ib.disconnect()
+                self._connected = False
+                self._notify_state_change(ConnectionState.DISCONNECTED)
+                logger.info("Disconnected from IBKR")
+
+    async def ensure_connected(self) -> bool:
+        """
+        Ensure connection is active, waiting for reconnection if in progress.
+
+        Returns:
+            True if connected, False if connection failed
+        """
+        if self.is_connected:
+            return True
+
+        if self._connection_state == ConnectionState.RECONNECTING:
+            # Wait for reconnection (with timeout)
+            timeout = self.config.reconnect_max_delay * 2
+            start = datetime.now()
+            while self._connection_state == ConnectionState.RECONNECTING:
+                if (datetime.now() - start).total_seconds() > timeout:
+                    logger.warning("Timeout waiting for reconnection")
+                    return False
+                await asyncio.sleep(0.5)
+            return self.is_connected
+
+        if self._connection_state == ConnectionState.FAILED:
+            logger.error("Connection in FAILED state - reset required")
+            return False
+
+        # Not connected and not reconnecting - try to connect
+        return await self.connect()
+
+    def reset_circuit_breaker(self) -> None:
+        """Reset the circuit breaker to allow new connection attempts."""
+        self._reconnect_attempts = 0
+        if self._connection_state == ConnectionState.FAILED:
+            self._notify_state_change(ConnectionState.DISCONNECTED)
+            logger.info("Circuit breaker reset")
 
     def _get_stock_contract(self, symbol: str, exchange: str = "SMART") -> Contract:
         """
@@ -299,7 +538,11 @@ class IBKRClient:
             logger.error("Not connected to IBKR")
             return None
 
-        contract = self._get_stock_contract(symbol)
+        # Qualify contract to get conId (required for hashing)
+        contract = await self.qualify_contract(symbol)
+        if not contract:
+            logger.error(f"Could not qualify contract for {symbol}")
+            return None
 
         try:
             ticker = self._ib.reqMktData(contract, "", False, False)
@@ -455,6 +698,70 @@ class IBKRClient:
 
         return results
 
+    async def place_order(
+        self,
+        symbol: str,
+        action: str,
+        quantity: int,
+        order_type: str = "MKT",
+        limit_price: float | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Place an order via IBKR.
+
+        Args:
+            symbol: Stock ticker symbol
+            action: "BUY" or "SELL"
+            quantity: Number of shares
+            order_type: "MKT" for market, "LMT" for limit
+            limit_price: Limit price (required for limit orders)
+
+        Returns:
+            Trade object info or None if failed
+        """
+        if not self.is_connected:
+            logger.error("Not connected to IBKR")
+            return None
+
+        try:
+            # Qualify the contract first
+            contract = await self.qualify_contract(symbol)
+            if not contract:
+                logger.error(f"Could not qualify contract for {symbol}")
+                return None
+
+            # Create the order
+            if order_type == "MKT":
+                order = MarketOrder(action, quantity)
+            elif order_type == "LMT" and limit_price:
+                order = LimitOrder(action, quantity, limit_price)
+            else:
+                logger.error(f"Invalid order type: {order_type}")
+                return None
+
+            # Place the order
+            trade = self._ib.placeOrder(contract, order)
+
+            # Wait briefly for order to be acknowledged
+            await asyncio.sleep(1)
+
+            logger.info(f"Order placed: {action} {quantity} {symbol} @ {order_type}")
+
+            return {
+                "order_id": trade.order.orderId,
+                "status": trade.orderStatus.status,
+                "filled": trade.orderStatus.filled,
+                "remaining": trade.orderStatus.remaining,
+                "avg_fill_price": trade.orderStatus.avgFillPrice,
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to place order for {symbol}: {e}")
+            return None
+
 
 # Context manager support
 class IBKRConnection:
@@ -471,10 +778,35 @@ class IBKRConnection:
         await self.client.disconnect()
 
 
+def connection_required(func):
+    """
+    Decorator that ensures connection before executing method.
+
+    Use on IBKRClient methods that require an active connection.
+    Will wait for reconnection if in progress.
+    """
+    async def wrapper(self: IBKRClient, *args, **kwargs):
+        if not await self.ensure_connected():
+            logger.error(f"Cannot execute {func.__name__}: not connected")
+            return None
+        return await func(self, *args, **kwargs)
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
+
 # Example usage
 async def main():
-    """Example usage of IBKRClient."""
+    """Example usage of IBKRClient with reconnection handling."""
+
+    # Define a connection state callback
+    def on_connection_change(state: ConnectionState, message: str | None):
+        print(f"Connection state: {state.name}" + (f" - {message}" if message else ""))
+
     async with IBKRConnection() as client:
+        # Register callback for connection state changes
+        client.add_connection_callback(on_connection_change)
+
         # Get historical data
         df = await client.get_historical_data("AAPL", duration="3 M")
         if df is not None:
@@ -489,6 +821,10 @@ async def main():
         # Get positions
         positions = await client.get_positions()
         print(f"Positions: {len(positions)}")
+
+        # Example: Check connection state
+        print(f"Current state: {client.connection_state.name}")
+        print(f"Is reconnecting: {client.is_reconnecting}")
 
 
 if __name__ == "__main__":

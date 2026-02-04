@@ -18,8 +18,21 @@ import uuid
 
 import asyncio
 
+from data.storage import DatabaseManager
+
 
 logger = logging.getLogger(__name__)
+
+# Global database manager for trade recording
+_db_manager: DatabaseManager | None = None
+
+def get_db_manager() -> DatabaseManager:
+    """Get or create the database manager."""
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+        logger.info("Database manager initialized for trade recording")
+    return _db_manager
 
 
 class OrderStatus(Enum):
@@ -287,16 +300,70 @@ class OrderManager:
             return False
 
         try:
-            # Build IBKR order
-            # This would use ib_async to create and submit the order
-            # For now, we'll simulate the submission
+            # Determine action
+            action = "BUY" if order.side == OrderSide.BUY else "SELL"
 
-            order.status = OrderStatus.SUBMITTED
-            order.submitted_at = datetime.now()
-            self._active_orders[order.order_id] = order
+            # Determine order type
+            if order.order_type == OrderType.MARKET:
+                order_type = "MKT"
+                limit_price = None
+            elif order.order_type == OrderType.LIMIT:
+                order_type = "LMT"
+                limit_price = order.limit_price
+            else:
+                # Default to market for other types
+                order_type = "MKT"
+                limit_price = None
 
-            logger.info(f"Order submitted: {order.order_id} - {order.side.value} {order.quantity} {order.symbol}")
-            return True
+            # Place order via IBKR client
+            result = await self.ibkr_client.place_order(
+                symbol=order.symbol,
+                action=action,
+                quantity=int(order.quantity),
+                order_type=order_type,
+                limit_price=limit_price,
+            )
+
+            if result:
+                order.status = OrderStatus.SUBMITTED
+                order.submitted_at = datetime.now()
+                order.ibkr_order_id = result.get("order_id")
+                self._active_orders[order.order_id] = order
+
+                # Check if already filled
+                if result.get("filled", 0) > 0:
+                    order.filled_quantity = result["filled"]
+                    order.avg_fill_price = result.get("avg_fill_price", 0)
+                    if result["remaining"] == 0:
+                        order.status = OrderStatus.FILLED
+                        order.filled_at = datetime.now()
+
+                    # Record trade to database for ML learning
+                    try:
+                        db = get_db_manager()
+                        trade_record = {
+                            "symbol": order.symbol,
+                            "trade_date": datetime.now(),
+                            "order_id": order.order_id,
+                            "order_type": order_type,
+                            "side": action.lower(),
+                            "quantity": order.filled_quantity,
+                            "price": order.avg_fill_price,
+                            "commission": order.commission,
+                            "total_value": order.filled_quantity * order.avg_fill_price,
+                            "notes": f"IBKR Order ID: {order.ibkr_order_id}",
+                        }
+                        record_id = db.save_trade(trade_record)
+                        logger.info(f"Trade recorded to DB: ID={record_id}, {action} {order.filled_quantity} {order.symbol} @ ${order.avg_fill_price:.2f}")
+                    except Exception as e:
+                        logger.error(f"Failed to record trade to DB: {e}")
+
+                logger.info(f"Order placed via IBKR: {order.order_id} - {action} {order.quantity} {order.symbol}")
+                return True
+            else:
+                order.status = OrderStatus.ERROR
+                logger.error(f"IBKR order placement returned no result for {order.symbol}")
+                return False
 
         except Exception as e:
             logger.error(f"Order submission failed: {e}")

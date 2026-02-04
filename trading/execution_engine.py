@@ -19,7 +19,7 @@ import logging
 import pandas as pd
 
 from config.settings import settings
-from data.ibkr_client import IBKRClient, MarketData
+from data.ibkr_client import IBKRClient, MarketData, ConnectionState
 from shariah.compliance_engine import ComplianceEngine
 from .order_manager import OrderManager, Order, OrderSide, OrderStatus
 from .risk_manager import RiskManager, RiskLimits
@@ -40,16 +40,37 @@ class Signal:
     features: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
+    # Momentum continuation fields
+    expected_magnitude: float | None = None  # Expected % return
+    expected_duration_bars: int | None = None  # Expected bars until target
+    momentum_score: float | None = None  # Composite score 0-100
+    suggested_stop_loss: float | None = None  # Suggested stop loss price
+    suggested_take_profit: float | None = None  # Suggested take profit price
+    timeframe: str = "daily"  # "intraday", "daily", "swing"
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "symbol": self.symbol,
             "signal_type": self.signal_type,
             "probability": self.probability,
             "confidence": self.confidence,
             "model_name": self.model_name,
             "timestamp": self.timestamp.isoformat(),
+            "timeframe": self.timeframe,
         }
+        # Add momentum fields if present
+        if self.expected_magnitude is not None:
+            result["expected_magnitude"] = self.expected_magnitude
+        if self.expected_duration_bars is not None:
+            result["expected_duration_bars"] = self.expected_duration_bars
+        if self.momentum_score is not None:
+            result["momentum_score"] = self.momentum_score
+        if self.suggested_stop_loss is not None:
+            result["suggested_stop_loss"] = self.suggested_stop_loss
+        if self.suggested_take_profit is not None:
+            result["suggested_take_profit"] = self.suggested_take_profit
+        return result
 
 
 @dataclass
@@ -134,12 +155,26 @@ class ExecutionEngine:
 
         # Connect to IBKR if available
         if self.ibkr_client:
+            # Register connection state callback
+            self.ibkr_client.add_connection_callback(self._on_connection_change)
+
             connected = await self.ibkr_client.connect()
             if not connected:
                 logger.warning("IBKR connection failed, running in simulation mode")
 
         self._running = True
         logger.info("Execution engine started")
+
+    def _on_connection_change(self, state: ConnectionState, message: str | None) -> None:
+        """Handle IBKR connection state changes."""
+        logger.info(f"IBKR connection state: {state.name}" + (f" - {message}" if message else ""))
+
+        if state == ConnectionState.RECONNECTING:
+            logger.warning("IBKR reconnecting - pausing order execution")
+        elif state == ConnectionState.CONNECTED and message == "Reconnected":
+            logger.info("IBKR reconnected - resuming normal operation")
+        elif state == ConnectionState.FAILED:
+            logger.error("IBKR connection failed permanently - manual intervention required")
 
     async def stop(self) -> None:
         """Stop the execution engine."""
@@ -194,9 +229,22 @@ class ExecutionEngine:
             result["actions_taken"].append("Shariah compliance verified")
 
             # Step 4: Get current market data
-            if self.ibkr_client and self.ibkr_client.is_connected:
-                quote = await self.ibkr_client.get_realtime_quote(signal.symbol)
-                current_price = quote.last_price if quote else None
+            if self.ibkr_client:
+                # Wait for reconnection if in progress
+                if self.ibkr_client.is_reconnecting:
+                    logger.info("Waiting for IBKR reconnection...")
+                    connected = await self.ibkr_client.ensure_connected()
+                    if not connected:
+                        result["errors"].append("IBKR reconnection failed")
+                        return result
+                    result["actions_taken"].append("Waited for IBKR reconnection")
+
+                if self.ibkr_client.is_connected:
+                    quote = await self.ibkr_client.get_realtime_quote(signal.symbol)
+                    current_price = quote.last_price if quote else None
+                else:
+                    current_price = 100.0  # Placeholder for simulation
+                    result["actions_taken"].append("Using simulated price (IBKR unavailable)")
             else:
                 current_price = 100.0  # Placeholder for simulation
                 result["actions_taken"].append("Using simulated price")
@@ -430,10 +478,23 @@ class ExecutionEngine:
 
     def get_status(self) -> dict[str, Any]:
         """Get engine status."""
+        ibkr_status = {
+            "connected": False,
+            "state": "unavailable",
+            "reconnecting": False,
+        }
+        if self.ibkr_client:
+            ibkr_status = {
+                "connected": self.ibkr_client.is_connected,
+                "state": self.ibkr_client.connection_state.name,
+                "reconnecting": self.ibkr_client.is_reconnecting,
+            }
+
         return {
             "running": self._running,
             "paper_trading": self.config.paper_trading,
-            "ibkr_connected": self.ibkr_client.is_connected if self.ibkr_client else False,
+            "ibkr": ibkr_status,
+            "ibkr_connected": self.ibkr_client.is_connected if self.ibkr_client else False,  # Legacy
             "positions": len(self._positions),
             "pending_signals": len(self._pending_signals),
             "executions_today": len([
